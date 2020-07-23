@@ -23,7 +23,7 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-//test change
+//test change again
 //ErrorInfo used for error response on failure
 type ErrorInfo struct {
 	Error            string `json:"Error"`
