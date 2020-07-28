@@ -23,6 +23,9 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+var client *mongo.Client
+var cg *consumergroup.ConsumerGroup
+
 //test change again
 //ErrorInfo used for error response on failure
 type ErrorInfo struct {
@@ -68,31 +71,39 @@ const (
 
 func main() {
 	// setup sarama log to stdout
+	var err error
+	err = OpenDB()
+	if err != nil {
+		fmt.Println("Error with opening the db: ", err.Error())
+		os.Exit(1)
+	}
 	sarama.Logger = log.New(os.Stdout, "", log.Ltime)
-
 	// init consumer
-	cg, err := initConsumer()
+	err = initConsumer()
 	if err != nil {
 		fmt.Println("Error consumer goup: ", err.Error())
 		os.Exit(1)
 	}
-	defer cg.Close()
-	consume1(cg)
+
+	for {
+		consume1()
+	}
 
 }
 
-func initConsumer() (*consumergroup.ConsumerGroup, error) {
+func initConsumer() error {
+
 	//   consumer config
 	config := consumergroup.NewConfig()
 	config.Offsets.Initial = sarama.OffsetOldest
 	config.Offsets.ProcessingTimeout = 10 * time.Second
-
+	var err error
 	//       // join to consumer group
-	cg, err := consumergroup.JoinConsumerGroup(cgroup, []string{topic}, []string{zookeeperConn}, config)
+	cg, err = consumergroup.JoinConsumerGroup(cgroup, []string{topic}, []string{zookeeperConn}, config)
 	if err != nil {
-		return nil, err
+		return nil
 	}
-	return cg, err
+	return err
 
 }
 
@@ -103,12 +114,8 @@ func CheckError(e error) {
 	}
 }
 
-func consume1(cg *consumergroup.ConsumerGroup) {
-	client, err := OpenDB()
-
-	if err != nil {
-		fmt.Println("Error with opening the db: ", err.Error())
-	} else {
+func consume1() {
+	go func() {
 		for {
 			select {
 			case msg := <-cg.Messages():
@@ -117,22 +124,20 @@ func consume1(cg *consumergroup.ConsumerGroup) {
 				if msg.Topic != topic {
 					continue
 				}
-				stringmsg := string(msg.Value)
+				// var msg1 sarama.ConsumerMessage
+				//stringmsg := string(msg.Value)
 				// consume(stringmsg)
-				err := saveMsgToMongoNew(stringmsg, client)
-				if err != nil {
-					fmt.Println("Error at saving: ", err.Error())
-				} else {
-					//commit to zookeeper that message is read
-					// this prevent read message multiple times after restart
-					err = cg.CommitUpto(msg)
-					if err != nil {
-						fmt.Println("Error commit zookeeper: ", err.Error())
-					}
-				}
+				saveMsgToMongoNew(msg)
+				// if err != nil {
+				// 	fmt.Println("Error at saving: ", err.Error())
+				// } else {
+				// 	//commit to zookeeper that message is read
+				// 	// this prevent read message multiple times after restart
+
+				// }
 			}
 		}
-	}
+	}()
 }
 
 // func consume(stringmsg string) {
@@ -164,14 +169,14 @@ func getDefaultValues() (*DatabaseConfigType, error) {
 	}
 }
 
-//Open DB shut up
-func OpenDB() (*mongo.Client, error) {
+//OpenDB shut up
+func OpenDB() error {
 	dbConfiguration, err := getDefaultValues()
 	fmt.Println("dbConfiguration*************==>", dbConfiguration)
 	if err != nil {
 		//
 		fmt.Println("dbConfiguration==>: ", err.Error())
-		return nil, err
+		return err
 		//
 	}
 	//
@@ -191,43 +196,45 @@ func OpenDB() (*mongo.Client, error) {
 
 	////
 	uri := fmt.Sprintf(`mongodb://%s`, theHost)
-	fmt.Println("Uri==>", uri)
+	fmt.Println("Uri===>", uri)
 
 	if dbConfiguration.Username != "" && dbConfiguration.Password != "" {
 		uri = fmt.Sprintf(`mongodb://%s:%s@%s/%s?authMechanism=SCRAM-SHA-1`, dbConfiguration.Username, url.QueryEscape(dbConfiguration.Password), theHost, dbConfiguration.Databasename)
 	}
 
-	client1, err := mongo.NewClient(options.Client().ApplyURI(uri))
+	client, err = mongo.NewClient(options.Client().ApplyURI(uri))
 	if err != nil {
 		//
 		fmt.Println("Error Database Connect==>", err.Error())
 
-		return nil, err
+		return err
 		//
 	}
 	//
-	err = client1.Connect(ctx)
+	err = client.Connect(ctx)
 	if err != nil {
 		//
 		fmt.Println("Error Database connect Client==>", err.Error())
-		return nil, err
+		return err
 		//
 	}
 	//
 
-	err = client1.Ping(context.TODO(), nil)
+	err = client.Ping(context.TODO(), nil)
+
 	if err != nil {
-		return nil, err
+		return err
 	} else {
-		return client1, nil
+		return nil
 	}
 
 }
-func saveMsgToMongoNew(msgValue string, client1 *mongo.Client) error {
+func saveMsgToMongoNew(msg *sarama.ConsumerMessage) error {
 
 	//
+	msgValue := string(msg.Value)
 	// get collection as ref
-	collection := client1.Database("consumertest").Collection("cdc_data")
+	collection := client.Database("consumertest").Collection("cdc_data")
 	// defer client1.Disconnect(context.TODO())
 	var dataStruct MsgStruct
 	var dat User1
@@ -247,6 +254,10 @@ func saveMsgToMongoNew(msgValue string, client1 *mongo.Client) error {
 		_, errMongo := collection.InsertOne(context.TODO(), dat)
 		if errMongo == nil {
 			println("done...")
+			err := cg.CommitUpto(msg)
+			if err != nil {
+				fmt.Println("Error commit zookeeper: ", err.Error())
+			}
 			return nil
 		} else {
 			//println("Error found:  ", errMongo)
