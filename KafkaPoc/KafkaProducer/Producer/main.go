@@ -37,6 +37,7 @@ type User struct //user query
 	Name       string        `json:"Name"`
 }
 
+//here
 //ManageError is for errors
 func ManageError(errorStr string) ErrorInfo {
 	//
